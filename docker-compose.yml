@@ -1,0 +1,67 @@
+version: '3'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: trader-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: QuantDB
+      MYSQL_USER: quant
+      MYSQL_PASSWORD: 123456
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    command: 
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --wait_timeout=31536000
+      - --interactive_timeout=31536000
+
+  redis:
+    image: redis:6.2
+    container_name: trader-redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+  trader:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    image: trader:latest
+    container_name: trader-app
+    restart: always
+    depends_on:
+      - mysql
+      - redis
+    volumes:
+      - ./:/app
+      - ../dashboard:/dashboard
+      - trader_logs:/app/.trader/logs
+      - trader_cache:/app/.trader/cache
+      - trader_config:/app/.trader/config
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DB=QuantDB
+      - MYSQL_USER=quant
+      - MYSQL_PASSWORD=123456
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    # command: python trader/main.py
+    entrypoint: "bash"
+    stdin_open: true
+    tty: true
+
+volumes:
+  mysql_data:
+  redis_data:
+  trader_logs:
+  trader_cache:
+  trader_config:
