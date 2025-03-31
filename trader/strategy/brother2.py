@@ -720,6 +720,28 @@ class TradeStrategy(BaseModule):
 
     def calc_signal(self, inst: Instrument, day: datetime.datetime) -> (Signal, Decimal):
         try:
+            '''
+实际上，我们发现这个策略就是《趋势交易》一书中提供的策略，书中提供的策略细节如下：
+只有在50天均线高于100天均线的时候才能开多仓。
+只有在50天均线低于100天均线的时候才能开空仓。
+如果某一天的收盘价是过去50天内最高的收盘价，我们就在下一个交易日买入。
+如果出现过去50天内最低的收盘价，我们就在下一个交易日卖出或卖空。
+单个品种的仓位额度与其波动性有关，我们根据前面讲过的真实波动幅度均值（ATR）公式来确定，风险因子可以暂时设定为20个基点。
+多头仓位的止损价格设定为开仓以来最高收盘价之下3个ATR的位置。
+空头仓位的止损价格设定为开仓以来最低收盘价之上3个ATR的位置。
+投资的品种池应该涵盖全部5个板块，而且从每个板块中选取的品种数量不少于10个。
+
+对应作者的系统里面，策略参数则是
+
+@dataclass  
+class Parameter:  
+    break_n = 50  
+    atr_n = 20  
+    long_n = 100  
+    short_n = 50  
+    stop_n = 3  
+    risk = 0.002   # 70种为0.002，0.05为十四种或九种
+            '''
             break_n = self.__strategy.param_set.get(code='BreakPeriod').int_value
             atr_n = self.__strategy.param_set.get(code='AtrPeriod').int_value
             long_n = self.__strategy.param_set.get(code='LongPeriod').int_value
