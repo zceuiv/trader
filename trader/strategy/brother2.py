@@ -679,6 +679,15 @@ class TradeStrategy(BaseModule):
 
     @RegisterCallback(crontab='0 17 * * *')
     async def collect_quote(self, tasks=None):
+        """
+        每日收盘后收集行情数据并计算交易信号
+        
+        在每个交易日17:00执行，从各交易所获取日线数据，
+        然后调用calculate方法计算交易信号
+        
+        参数:
+            tasks: 可选，指定要执行的数据收集任务列表
+        """
         try:
             day = timezone.localtime()
             _, trading = await is_trading_day(day)
@@ -687,11 +696,14 @@ class TradeStrategy(BaseModule):
                 return
             logger.debug(f'{day}盘后计算,获取交易所日线数据..')
             if tasks is None:
+                # 默认从所有交易所获取数据
                 tasks = [update_from_shfe, update_from_dce, update_from_czce, update_from_cffex, update_from_gfex, get_contracts_argument]
             result = await asyncio.gather(*[func(day) for func in tasks], return_exceptions=True)
             if all(result):
+                # 所有数据获取成功，计算交易信号
                 self.io_loop.call_soon(self.calculate, day)
             else:
+                # 部分数据获取失败，10分钟后重试失败的任务
                 failed_tasks = [tasks[i] for i, rst in enumerate(result) if not rst]
                 self.io_loop.call_later(10*60, asyncio.create_task, self.collect_quote(failed_tasks))
         except Exception as e:
@@ -699,19 +711,33 @@ class TradeStrategy(BaseModule):
         logger.debug('盘后计算完毕!')
 
     def calculate(self, day, create_main_bar=True):
+        """
+        计算交易信号并生成连续合约
+        
+        处理所有关注的品种，生成连续合约数据，计算交易信号，
+        并进行风险评估
+        
+        参数:
+            day: 计算日期
+            create_main_bar: 是否创建连续合约数据，默认为True
+        """
         try:
+            # 获取所有需要计算的品种代码
             p_code_set = set(self.__inst_ids)
             for code in self.__cur_pos.keys():
                 p_code_set.add(self.__re_extract_code.match(code).group(1))
             all_margin = 0
             for inst in Instrument.objects.all().order_by('section', 'exchange', 'name'):
                 if create_main_bar:
+                    # 生成连续合约数据
                     logger.debug(f'生成连续合约: {inst.name}')
                     calc_main_inst(inst, day)
                 if inst.product_code in p_code_set:
+                    # 计算交易信号
                     logger.debug(f'计算交易信号: {inst.name}')
                     sig, margin = self.calc_signal(inst, day)
                     all_margin += margin
+            # 风险评估：如果所需保证金超过账户资金的80%，发出风险警告
             if (all_margin + self.__margin) / self.__current > 0.8:
                 logger.info(f"！！！风险提示！！！开仓保证金共计: {all_margin:.0f}({all_margin/10000:.1f}万) "
                             f"账户风险度将达到: {100 * (all_margin + self.__margin) / self.__current:.0f}% 建议追加保证金或减少开仓手数！")
@@ -719,6 +745,26 @@ class TradeStrategy(BaseModule):
             logger.warning(f'calculate 发生错误: {repr(e)}', exc_info=True)
 
     def calc_signal(self, inst: Instrument, day: datetime.datetime) -> (Signal, Decimal):
+        """
+        计算单个品种的交易信号
+        
+        实现了《趋势交易》一书中的策略:
+        1. 只有在短期均线高于长期均线时才能开多仓
+        2. 只有在短期均线低于长期均线时才能开空仓
+        3. 如果收盘价是过去N天内最高价，在下一交易日买入
+        4. 如果收盘价是过去N天内最低价，在下一交易日卖出
+        5. 仓位大小基于ATR和风险因子计算
+        6. 多头止损设置在开仓以来最高价下方N个ATR
+        7. 空头止损设置在开仓以来最低价上方N个ATR
+        
+        参数:
+            inst: 品种对象
+            day: 计算日期
+            
+        返回:
+            signal: 生成的信号对象
+            margin: 所需保证金
+        """
         try:
             '''
 实际上，我们发现这个策略就是《趋势交易》一书中提供的策略，书中提供的策略细节如下：
@@ -752,17 +798,30 @@ class Parameter:
             df = to_df(MainBar.objects.filter(time__lte=day.date(), exchange=inst.exchange, product_code=inst.product_code).order_by('-time').values_list(
                 'time', 'open', 'high', 'low', 'close')[:400], index_col='time', parse_dates=['time'])
             df = df.iloc[::-1]  # 日期升序排列
-            df["atr"] = ATR(df.high, df.low, df.close, timeperiod=atr_n)
-            df["short_trend"] = df.close
-            df["long_trend"] = df.close
-            for idx in range(1, df.shape[0]):  # 手动计算SMA
+            
+            # 计算技术指标
+            df["atr"] = ATR(df.high, df.low, df.close, timeperiod=atr_n)  # 真实波动幅度
+            df["short_trend"] = df.close  # 短期均线
+            df["long_trend"] = df.close   # 长期均线
+            
+            # 手动计算移动平均线
+            for idx in range(1, df.shape[0]): # 手动计算SMA
                 df.short_trend[idx] = (df.short_trend[idx-1] * (short_n - 1) + df.close[idx]) / short_n
                 df.long_trend[idx] = (df.long_trend[idx-1] * (long_n - 1) + df.close[idx]) / long_n
-            df["high_line"] = df.close.rolling(window=break_n).max()
-            df["low_line"] = df.close.rolling(window=break_n).min()
-            idx = -1
+                
+            # 计算突破指标
+            df["high_line"] = df.close.rolling(window=break_n).max()  # N日最高收盘价
+            df["low_line"] = df.close.rolling(window=break_n).min()   # N日最低收盘价
+            
+            idx = -1  # 使用最新数据
+            
+            # 生成交易信号
+            # 多头信号：短期均线在长期均线上方且价格突破N日最高价
             buy_sig = df.short_trend[idx] > df.long_trend[idx] and price_round(df.close[idx], inst.price_tick) >= price_round(df.high_line[idx - 1], inst.price_tick)
+            # 空头信号：短期均线在长期均线下方且价格跌破N日最低价
             sell_sig = df.short_trend[idx] < df.long_trend[idx] and price_round(df.close[idx], inst.price_tick) <= price_round(df.low_line[idx - 1], inst.price_tick)
+            
+            # 检查当前持仓
             pos = Trade.objects.filter(close_time__isnull=True, broker=self.__broker, strategy=self.__strategy, instrument=inst, shares__gt=0).first()
             roll_over = False
             if pos:
@@ -774,6 +833,7 @@ class Parameter:
                 else:
                     sell_sig = True
                 self.__strategy.force_opens.remove(inst)
+            # 后续代码处理持仓管理、止损、换月和开仓逻辑...
             signal = signal_code = price = volume = volume_ori = use_margin = None
             priority = PriorityType.LOW
             if pos:
