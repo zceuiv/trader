@@ -169,34 +169,65 @@ def market_close(context):
             # 计算移动平均线
             df['short_trend'] = df.close.copy()
             df['long_trend'] = df.close.copy()
-            
-            # 手动计算SMA
+            # log.info(f"cccccc {df.close}")
+            # 手动计算SMA，处理NaN值
+            # log.info(f"aaaaaa {df.shape[0]}")
             for idx in range(1, df.shape[0]):
-                df.short_trend.iloc[idx] = (df.short_trend.iloc[idx-1] * (context.params.short_n - 1) + df.close.iloc[idx]) / context.params.short_n
-                df.long_trend.iloc[idx] = (df.long_trend.iloc[idx-1] * (context.params.long_n - 1) + df.close.iloc[idx]) / context.params.long_n
+                # 检查前一个值和当前收盘价是否为NaN
+                prev_short = df.short_trend.iloc[idx-1]
+                prev_long = df.long_trend.iloc[idx-1]
+                curr_close = df.close.iloc[idx]
+                # log.info(f"bbbbbb, {idx}, {prev_short}, {curr_close}, {context.params.short_n}")
+                
+                # 处理短期均线
+                if pd.notna(prev_short) and pd.notna(curr_close):
+                    # 正常计算
+                    df.short_trend.iloc[idx] = (prev_short * (context.params.short_n - 1) + curr_close) / context.params.short_n
+                elif pd.notna(curr_close):
+                    # 如果前一个值为NaN但当前收盘价有效，直接使用当前收盘价
+                    df.short_trend.iloc[idx] = curr_close
+                else:
+                    # 如果当前收盘价为NaN，保持NaN
+                    df.short_trend.iloc[idx] = np.nan
+                
+                # 处理长期均线
+                if pd.notna(prev_long) and pd.notna(curr_close):
+                    # 正常计算
+                    df.long_trend.iloc[idx] = (prev_long * (context.params.long_n - 1) + curr_close) / context.params.long_n
+                elif pd.notna(curr_close):
+                    # 如果前一个值为NaN但当前收盘价有效，直接使用当前收盘价
+                    df.long_trend.iloc[idx] = curr_close
+                else:
+                    # 如果当前收盘价为NaN，保持NaN
+                    df.long_trend.iloc[idx] = np.nan
             
             # 计算突破指标
             df['high_line'] = df.close.rolling(window=context.params.break_n).max()  # N日最高收盘价
             df['low_line'] = df.close.rolling(window=context.params.break_n).min()   # N日最低收盘价
             
             # 获取当前持仓
-            current_position = get_position(context, contract_id)
+            # current_position = get_position(context, contract_id)
+            current_position = get_position2(context, contract_id)
             
             # 获取最新行情数据
             idx = -1
             current_price = df.close.iloc[idx]
             current_atr = df.atr.iloc[idx]
-            
+            log.info(f"Close: {contract_id}, {df.short_trend.iloc[idx]}, {df.long_trend.iloc[idx]}, {current_price}, {df.high_line.iloc[idx-1]}, {df.low_line.iloc[idx-1]}")
             # 生成交易信号
             # 多头信号：短期均线在长期均线上方且价格突破N日最高价
+            # buy_sig = df.short_trend.iloc[idx] > df.long_trend.iloc[idx] and \
+            #           round_price(current_price, contract.price_tick) >= \
+            #           round_price(df.high_line.iloc[idx-1], contract.price_tick)
             buy_sig = df.short_trend.iloc[idx] > df.long_trend.iloc[idx] and \
-                      round_price(current_price, contract.price_tick) >= \
-                      round_price(df.high_line.iloc[idx-1], contract.price_tick)
+                      current_price >= df.high_line.iloc[idx-1] 
             
             # 空头信号：短期均线在长期均线下方且价格跌破N日最低价
+            # sell_sig = df.short_trend.iloc[idx] < df.long_trend.iloc[idx] and \
+            #            round_price(current_price, contract.price_tick) <= \
+            #            round_price(df.low_line.iloc[idx-1], contract.price_tick)
             sell_sig = df.short_trend.iloc[idx] < df.long_trend.iloc[idx] and \
-                       round_price(current_price, contract.price_tick) <= \
-                       round_price(df.low_line.iloc[idx-1], contract.price_tick)
+                       current_price <= df.low_line.iloc[idx-1]
             
             # 持仓管理
             if current_position > 0:  # 持有多头
@@ -348,6 +379,15 @@ def get_position(context, contract_id):
     position = context.portfolio.positions.get(contract_id)
     if position:
         return position.closeable_amount if position.side == SIDE.LONG else -position.closeable_amount
+    return 0
+
+def get_position2(context, contract_id):
+    long_position = context.portfolio.long_positions.get(contract_id)
+    if long_position:
+        return long_position.closeable_amount
+    short_position = context.portfolio.short_positions.get(contract_id)
+    if short_position:
+        return -short_position.closeable_amount
     return 0
 
 # 价格取整函数
