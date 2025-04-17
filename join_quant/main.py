@@ -84,6 +84,14 @@ def calculate_atr(high, low, close, period=14):
 
 # 初始化函数，设定基准等等
 def initialize(context):
+
+    ## 设置单个账户
+    # 获取初始资金
+    init_cash = context.portfolio.starting_cash 
+    # 设定账户为金融账户，初始资金为 init_cash 变量代表的数值（如不使用设置多账户，默认只有subportfolios[0]一个账户，Portfolio 指向该账户。）
+    set_subportfolios([SubPortfolioConfig(cash=init_cash, type='futures')])
+
+
     # 设置参数
     context.params = Parameter()
     
@@ -275,8 +283,8 @@ def market_close(context):
             else:  # 无持仓，考虑开仓
                 if buy_sig or sell_sig:
                     # 计算每点价值
-                    contract_multiplier = contract.contract_multiplier
-                    point_value = contract_multiplier * current_atr
+                    # contract_multiplier = get_extras('unit_net_value', [contract_id])[contract_id]
+                    point_value = current_atr
                     
                     # 计算仓位大小
                     risk_amount = total_value * context.params.risk

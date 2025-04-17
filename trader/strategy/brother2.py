@@ -839,36 +839,64 @@ class Parameter:
             if pos:
                 # 多头持仓
                 if pos.direction == DirectionType.values[DirectionType.LONG]:
-                    first_pos = pos
-                    while hasattr(first_pos, 'open_order') and first_pos.open_order and first_pos.open_order.signal and first_pos.open_order.signal.type == \
-                            SignalType.ROLL_OPEN:
+                    first_pos = pos  # 初始化首次持仓变量为当前持仓
+                    
+                    # 循环查找最初的持仓 - 处理因换月导致的多次换仓情况
+                    while hasattr(first_pos, 'open_order') and first_pos.open_order and first_pos.open_order.signal and first_pos.open_order.signal.type == SignalType.ROLL_OPEN:
+                        # 如果当前持仓是通过换月开的新仓，则寻找换月前的原始持仓
                         last_pos = Trade.objects.filter(
-                            close_order__signal__type=SignalType.ROLL_CLOSE, instrument=first_pos.instrument, strategy=first_pos.strategy,
-                            shares=first_pos.shares, direction=first_pos.direction, close_time__date=first_pos.open_time.date()).first()
-                        if last_pos is None:
+                            close_order__signal__type=SignalType.ROLL_CLOSE,  # 寻找因换月而平仓的订单
+                            instrument=first_pos.instrument,                  # 同一个品种
+                            strategy=first_pos.strategy,                      # 同一个策略
+                            shares=first_pos.shares,                          # 相同持仓量
+                            direction=first_pos.direction,                    # 相同方向(多头)
+                            close_time__date=first_pos.open_time.date()       # 平仓时间与当前持仓开仓时间是同一天(换月特征)
+                        ).first()
+                        
+                        if last_pos is None:  # 如果找不到更早的持仓，跳出循环
                             break
                         logger.debug(f"发现换月前持仓:{last_pos} 开仓时间: {last_pos.open_time}")
-                        first_pos = last_pos
+                        first_pos = last_pos  # 更新首次持仓为找到的更早持仓
+                    
+                    # 获取首次持仓开仓时间在价格数据中的位置索引
                     pos_idx = df.index.get_loc(first_pos.open_time.astimezone().date().isoformat())
-                    # 多头止损
+                    
+                    # 多头止损逻辑: 当前收盘价低于开仓以来最高价减去N倍ATR
                     if df.close[idx] <= df.high[pos_idx:idx].max() - df.atr[pos_idx - 1] * stop_n:
-                        signal = SignalType.SELL
-                        signal_code = pos.code
-                        volume = pos.shares
+                        signal = SignalType.SELL                      # 生成卖出信号
+                        signal_code = pos.code                        # 设置信号对应的合约代码
+                        volume = pos.shares                           # 设置卖出数量为持仓量
+                        # 获取最新的合约日线数据
                         last_bar = DailyBar.objects.filter(exchange=inst.exchange, code=pos.code, time=day.date()).first()
+                        # 计算卖出价格(向下接近跌停价以确保成交)
                         price = self.calc_down_limit(inst, last_bar)
-                        priority = PriorityType.High
-                    # 多头换月
+                        priority = PriorityType.High                  # 止损信号设为高优先级
+                    
+                    # 多头换月逻辑: 当前持有的合约不再是主力合约且需要换月
                     elif roll_over:
-                        signal = SignalType.ROLL_OPEN
-                        volume = pos.shares
+                        signal = SignalType.ROLL_OPEN                 # 生成换月开新仓信号
+                        volume = pos.shares                           # 设置开仓数量为当前持仓量
+                        # 获取旧合约和新合约(主力)的日线数据
                         last_bar = DailyBar.objects.filter(exchange=inst.exchange, code=pos.code, time=day.date()).first()
                         new_bar = DailyBar.objects.filter(exchange=inst.exchange, code=inst.main_code, time=day.date()).first()
+                        # 计算开新仓价格(接近涨停价以确保成交)
                         price = self.calc_up_limit(inst, new_bar)
-                        priority = PriorityType.Normal
+                        priority = PriorityType.Normal                # 换月信号设为普通优先级
+                        
+                        # 同时创建平旧仓信号 - 换月需要同时平旧仓开新仓
                         Signal.objects.update_or_create(
-                            code=pos.code, strategy=self.__strategy, instrument=inst, type=SignalType.ROLL_CLOSE, trigger_time=day,
-                            defaults={'price': self.calc_down_limit(inst, last_bar), 'volume': volume, 'priority': priority, 'processed': False})
+                            code=pos.code,                            # 旧合约代码
+                            strategy=self.__strategy,                 # 当前策略
+                            instrument=inst,                          # 品种
+                            type=SignalType.ROLL_CLOSE,               # 平仓类型为换月平仓
+                            trigger_time=day,                         # 信号触发时间
+                            defaults={
+                                'price': self.calc_down_limit(inst, last_bar),  # 平仓价格(接近跌停价)
+                                'volume': volume,                               # 平仓数量
+                                'priority': priority,                           # 优先级
+                                'processed': False                              # 未处理标记
+                            }
+                        )
                 # 空头持仓
                 else:
                     first_pos = pos
